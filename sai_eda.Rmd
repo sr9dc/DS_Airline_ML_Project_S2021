@@ -1,0 +1,170 @@
+---
+title: "sai_eda"
+author: "Sai Rajuladevi"
+date: "5/13/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(knitr)
+library(caret)
+library(ggplot2)
+library(ggcorrplot)
+library(dplyr)
+library(visreg)
+library(ROCR)
+library(MLmetrics)
+library(devtools)
+library(reprtree)
+
+#install.packages('e1071', dependencies=TRUE)
+# devtools::install_github('araastat/reprtree')
+
+
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+We started by cleaning the data. The general process was to delete certain variables which did not have an effect on the predictions, like the randomized survey ID. Then we used the complete cases function which ensured that not too many NA's got deleted to help with the data pipeline. Also, the survey data was categorized to help for better analysis. 
+```{r, echo=TRUE, warning=FALSE, message=FALSE}
+# 1
+# You can use the function colnames() to apply the labels (hint: you might need to reshape the labels to make this work)
+train = read_csv("train.csv")
+test = read_csv("test.csv")
+
+train.cleaned <- train[complete.cases(train), ]
+train.cleaned <- train.cleaned %>% dplyr::rename_all(make.names)
+
+test.cleaned <- test[complete.cases(test), ]
+test.cleaned <- test.cleaned %>% dplyr::rename_all(make.names)
+
+train.cleaned$satisfaction <- recode(train.cleaned$satisfaction, 'neutral or dissatisfied' = 0, 'satisfied' = 1)
+test.cleaned$satisfaction <- recode(test.cleaned$satisfaction, 'neutral or dissatisfied' = 0, 'satisfied' = 1)
+
+train.cleaned <- train.cleaned[,-c(1:6)]
+test.cleaned <- test.cleaned[,-c(1:6)]
+
+train.cleaned$Class <- as.factor(train.cleaned$Class)
+test.cleaned$Class <- as.factor(test.cleaned$Class)
+
+train.cleaned[,3:16] <- lapply(train.cleaned[,3:16], factor)
+
+test.cleaned[,3:16] <- lapply(test.cleaned[,3:16], factor)
+
+train.cleaned$satisfaction <- as.factor(train.cleaned$satisfaction)
+test.cleaned$satisfaction <- as.factor(test.cleaned$satisfaction)
+
+
+train.ready.rfr <- train.cleaned
+test.ready.rfr <- test.cleaned
+
+common <- intersect(names(train.ready.rfr), names(test.ready.rfr)) 
+
+for (p in common) { 
+  if (class(train.ready.rfr[[p]]) == "factor") 
+  {
+    levels(test.ready.rfr[[p]]) <- levels(train.ready.rfr[[p]]) 
+  } 
+}
+
+```
+
+Here, we calculated the base rate, which turned out to be pretty low (around ~40%). 
+```{r}
+train.ready.rfr %>%
+  group_by(satisfaction) %>% 
+  summarise(base_rates = n() / nrow(train.ready.rfr) * 100)
+
+test.ready.rfr %>% 
+  group_by(satisfaction) %>% 
+  summarise(base_rates = n() / nrow(test.ready.rfr) * 100)
+
+
+## base rate for positive classification
+base_rate_train <- 43.32
+base_rate_test <- 43.89
+
+
+```
+A random classifier was set up, which builds multiple decision trees and merges them to create an accurate and stable prediction. The general algorithm Utilizes randomness to decorrolate the trees by splitting a random subset of features. This way, it considers only a small subset of features rather than all the features at the same time.
+
+We then plotted the average error along the number of trees built to help with visualization. 
+
+```{r}
+#import the package
+library(randomForest)
+# Perform training:
+
+
+set.seed(2025)	
+rf_classifier = randomForest(satisfaction ~ ., data=train.ready.rfr, #y = NULL,           #<- A response vector. This is unnecessary because we're specifying a response formula.
+                             ntree = 400,          #<- Number of trees to grow. This should not be set to too small a number, to ensure that every input row gets classified at least a few times.
+                              replace = TRUE,      #<- Should sampled data points be replaced.
+                              sampsize = 200,      #<- Size of sample to draw each time.
+                              nodesize = 5,        #<- Minimum numbers of data points in terminal nodes.
+                              importance = TRUE,   #<- Should importance predictors be assessed?
+                              proximity = FALSE,    #<- Should a proximity measure between rows be calculated?
+                              norm.votes = TRUE,   #<- If TRUE (default), the final result of votes are 
+                              keep.forest = TRUE,  #<- If set to FALSE, the forest will not be retained in the output object. If xtest is given, defaults to FALSE.
+                              keep.inbag = TRUE)
+
+plot(rf_classifier, type="l", main=deparse(substitute(x)))
+
+
+```
+The next important step after running the random forest model was to determine the importance of each factor. Here, we used the varImpPlot function in R. As you can see online boarding, inflight wifi service, and airline classes represented the 3 most important factors for the satisfaction predictions. A simple explanation is that these factors form a part of prediction power of the Random Forest Model. If these factors were dropped from the model, it's prediction power would greatly reduce. As shown from the decision tree, these 3 factors remain the most important and contribute the best predictions of customer satisfaction. 
+
+```{r, fig.width=10, fig.height=5}  
+
+varImpPlot(rf_classifier)
+```
+Here, we ran a confusion matrix to help show how accurate the model is on the test data. 
+
+The confusion matrix resulted in an accuracy of 90.11% and a Kappa of 0.7973, which is a lot better than the base rate already. The sensitivity value is very good at 94.69% compared to the specificity value of 84.27%- which means that the true positive rate is better than the true negative rate. This means that the model can predict when a customer is satisfied slightly better than when they aren't. 
+
+
+```{r}
+prediction_for_table <- predict(rf_classifier, test.ready.rfr[,-ncol(test.ready.rfr)])
+confusionMatrix(prediction_for_table, as.factor(test.ready.rfr$satisfaction))
+```
+
+Let's take a look at the ROC curve. 
+
+Based on the curve, it looks like the model is a very good fit, since the curve is well above the average line. 
+
+```{r}
+prediction_for_roc_curve <- predict(rf_classifier, test.ready.rfr[,-ncol(test.ready.rfr)], type="prob")
+
+pred <- prediction(as.numeric(prediction_for_roc_curve[,"1"]), as.numeric(test.ready.rfr$satisfaction))
+perf <- performance(pred,"tpr","fpr")
+plot(perf,colorize=TRUE)+abline(a=0, b=1)
+
+```
+
+Now let's find the AUC value. In general, an AUC of 0.5 suggests no discrimination (i.e., ability to diagnose patients with and without the disease or condition based on the test), 0.7 to 0.8 is considered acceptable, 0.8 to 0.9 is considered excellent, and more than 0.9 is considered outstanding.
+
+In general, the AUC value tells how much the model is capable of distinguishing between classes. Higher the AUC, the better the model is at predicting satisfaction based on both specificity and sensitivity. For example, the Higher the AUC, the better the model is at distinguishing between patients with the disease and no disease.
+
+
+```{r}
+KNN_perf_AUC <- performance(pred,"auc")
+
+paste("AUC: ", KNN_perf_AUC@y.values)
+```
+For our model we have a pretty outstanding fit- which definitely speaks towards the quality of the dataset. In comparison with the general decision tree, the random forest approach definitely is an improvement in classifying airline customer's satisfaction, as seen through the confusion matrix, ROC curve, and the AUC value. 
+```{r}
+ll <- LogLoss(as.numeric(prediction_for_roc_curve[,"1"]), as.numeric(test.ready.rfr$satisfaction))
+ll
+```
+The LogLoss of the Model is 0.818-> the lower this value is the better for predictions. 
+
+
+Conclusion:
+
+According to the decision tree model and the random forest model, the 3 most important factors in airline satisfaction were the satisfaction levels of online boarding, inflight wifi services, and airline classes passengers sat in. Interestingly enough, the least important factors were arrival delays and departure delays in minutes. The exploratory analysis confirmed that these factors were indeed not as important to passengers as others, which can be explained by the importance of comfort and convenience in the flight itself shown by the importance analysis from the Random Forest Model. 
+
+This can be substantiated by the fact that our metrics for accuracy, sensitivity, and specificity were high for both the decision tree and the random forest model. If the focus is to improve customer airline satisfaction, people prefer the three factors (online boarding, inflight wifi services, and airline classes) over the other factors measured in the survey, such as delay/arrival time convenience, Gate Location, and food and drinks.
+

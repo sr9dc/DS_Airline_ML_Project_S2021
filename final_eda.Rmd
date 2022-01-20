@@ -1,0 +1,651 @@
+---
+title: "final project"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 4
+    toc_float: true
+    css: "style.css"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE, error=FALSE, cache=TRUE, warning=FALSE)
+```
+
+```{r, echo=FALSE}
+#eda libraries
+library(tidyverse)
+library(knitr)
+library(caret)
+library(ggplot2)
+library(ggcorrplot)
+library(dplyr)
+library(DT)
+library(visdat)
+library(naniar)
+library(plotly)
+library(gridExtra)
+
+#dt libraries
+library(rio)
+library(plyr)
+library(rpart)
+library(psych)
+library(pROC)
+library(rpart.plot)
+library(rattle)
+library(caret)
+library(e1071)
+library(ROCR)
+library(MLmetrics)
+
+##rf libraries
+library(randomForest)
+```
+
+### thesis
+
+Our thesis is driven by our guiding question: can we identify the most economically-friendly factors that airlines can invest in to improve customer satisfaction?
+
+<br>
+
+#### project overview
+
+Our project was inspired by Kaggle's [airline passenger satisfaction dataset](https://www.kaggle.com/teejmahal20/airline-passenger-satisfaction). Comprised of 25 columns and 130,000 observations, the dataset is an aggregation of customer surveys and encodes a comprehensive set of quantitative and qualitative conditions. Guided by the assumption that customer retention is intrinsically tied to customer satisfaction, our research is designed to maximize positive flight experiences through an analytical lens.  
+
+In this project, we hope to create classifiers that can predict if a customer had a positive experience or a neutral or negative one. These models can then be leveraged to identify the factors that contribute most to customer satisfaction; by identifying features most highly correlated with company success, we can distill these variables into actionable insights and applicable recommendations. 
+
+Our project analyzes 2 machine-learning models: decision trees and random forests. In balancing their computational efficiency against their performance metrics, we can provide a comprehensive audit of the ideal market model.  
+
+<br>
+
+### exploratory data analysis
+
+To gain a more comprehensive understanding of our dataset, we will conduct some exploratory analyses, supported by summary statistics and viz. 
+
+```{r, echo=FALSE}
+train<-read.csv("train.csv")
+test<-read.csv("test.csv")
+df<-rbind(train, test)
+
+df_clean<-df%>%
+  select(-c("X", "id"))
+```
+
+<br>
+
+#### data overview with `naniar`
+
+First, we want to evaluate how clean the dataset is. Inspired by the `naniar` package, we can visualize any missing observations with `vis_data`:
+
+```{r}
+vis_dat(df_clean, warn_large_data=FALSE, large_data_size=130000)
+```
+
+This viz shows that, on the whole, the dataset is fairly clean, with only a few missing values in the `Arrival.Delay.in.Minutes` column. To get a numeric breakdown of the missing data, we can return a graph using `vis_miss`:
+
+```{r}
+vis_miss(df_clean, warn_large_data=FALSE, sort_miss=TRUE)+theme(plot.margin=unit(c(0,2.4,0,0),"cm"))
+```
+
+With NAs accounting for less than 0.1% of the set (at its worst, contributing to 0.3% of the `Arrival.Delay.in.Minutes`), we can confidently omit these values without worry of significantly altering its framework. For a more comprehensive analysis of where missing values are (since there are too few to effectively visualize), we can return the number of missing values per attribute: 
+
+```{r}
+#is.na sum
+sapply(df_clean,function(X) sum(is.na(X)))
+```
+
+<br>
+
+#### summary statistics
+
+In summarizing the features, we can analyze their skew and metrics (i.e. mean, standard deviation) relative to each other. First, we can visualize the "satisfaction" variables (the direct survey responses encoding leg room, food service, etc.)
+
+```{r, warning=FALSE}
+df_clean<-df_clean[(df_clean$satisfaction!=""),]
+
+df_sat<-df_clean%>%
+  select(c(7:20))
+
+ggplot(stack(df_sat), aes(x = ind, y = values)) +
+  geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1), 
+        plot.margin=unit(c(0,0,0,1),"cm"))+labs(x="satisfaction features", y="value level")
+```
+
+```{r}
+age<-ggplot(df_clean, aes(x=Age))+
+    geom_histogram(fill="#619cff")+
+    labs(x="age")
+
+d<-ggplot(df_clean, aes(x=Flight.Distance))+
+      geom_histogram(fill="#619cff")+
+      labs(y="", x="flight distance")
+
+dep<-ggplot(df_clean, aes(x=Departure.Delay.in.Minutes))+
+                geom_histogram(fill="#619cff")+
+                xlim(0,250)+ylim(0,15000)+
+                labs(x="departure delay (mins)")
+
+arr<-ggplot(df_clean, aes(x=Arrival.Delay.in.Minutes))+
+                geom_histogram(fill="#619cff")+
+                xlim(0,250)+ylim(0,15000)+
+                labs(y="", x="arrival delay (mins)")
+
+grid.arrange(age, d, dep, arr, ncol=2, nrow=2)
+```
+
+Basic analysis of the first viz shows that the satisfaction levels are fairly distributed, and skew towards scores of 3+; examination of the second viz shows that the age variable is predictably distributed, flight distance indicates that most flights are domestic (under 1000 miles), and that delays are both skewed towards the left of a 50 minute mark.
+
+<br>
+
+#### satisfaction distributions
+
+To understand the relation between target variable (satisfaction) and the feature variables, we can leverage data viz and examine the distribution of satisfaction within attributes. 
+
+```{r}
+df_test<-df_clean
+df_test$satisfaction<-recode(df_clean$satisfaction, 'neutral or dissatisfied' = 0, 'satisfied' = 1)
+num_df<-df_test%>%select_if(is.numeric)
+cor_matrix<-cor(num_df)
+ggcorrplot(cor_matrix, tl.cex = 8)
+```
+
+Against our intuition, delays (arrival and departure) are not correlated to the satisfaction of customers; rather, variables encoding comfort and service (e.g. seat comfort, leg room, and online boarding) are much more significant. To provide some initial insight this relationship, we can provide a few distribution visualizations.
+
+```{r}
+ggplot(df_clean, aes(Age, fill=satisfaction))+
+  geom_bar(position = "dodge")+
+  labs(x="age")
+```
+
+Acting in direct opposition to our biases, young people (20-35) are far more likely to indicate dissatisfaction, while those in the 40-60 age range are more predisposed to indicating a positive experience.
+
+```{r}
+df_clean$Customer.Type<-ifelse(df_clean$Customer.Type=="Loyal Customer", "disloyal", "loyal")
+  
+nn<-ggplot(df_clean, aes(Customer.Type, fill=satisfaction))+
+  geom_bar(position="fill")+guides(fill="none")+
+  labs(x="customer type", y="percentage")
+
+gg<-ggplot(df_clean, aes(Customer.Type, fill=satisfaction))+
+  geom_bar(position="dodge")+guides(fill="none")+
+  labs(x="customer type")
+
+grid.arrange(gg, nn, ncol=2, nrow=1)
+```
+
+Unsurprisingly, loyal customers are far less likely to indicate displeasure (even when adjusted for data imbalance).
+
+```{r}
+df_clean$Type.of.Travel<-ifelse(df_clean$Type.of.Travel=="Personal Travel", "personal", "business")
+  
+g<-ggplot(df_clean, aes(Class, fill=satisfaction))+
+  geom_bar(position="dodge")+guides(fill="none")+
+  labs(x="class")
+
+i<-ggplot(df_clean, aes(Type.of.Travel, fill=satisfaction))+
+  geom_bar(position="dodge")+guides(fill="none")+
+  labs(x="travel type", y="")
+
+grid.arrange(g, i, ncol=2, nrow=1)
+```
+
+Again, surprising literally no one, customers are much more likely to indicate a positive experience if in business class than in Eco; as those traveling for business are more likely to be in business class, this observation holds for the travel type variable.  
+
+<br>
+
+#### fairness assessment
+
+To ensure that the dataset is comprehensive and representative of the protected classes it contains (Gender), we can visualize the balance between Male and Female respondents:  
+
+```{r}
+g<-ggplot(df_clean, aes(Gender, fill=satisfaction))+
+  geom_bar(position="dodge")+guides(fill="none")+
+  labs(x="gender")
+
+h<-ggplot(df_clean, aes(Gender, fill=satisfaction))+
+  geom_bar(position="fill")+guides(fill="none")+
+  labs(y="percentage", x="gender")
+
+grid.arrange(g, h, ncol=2, nrow=1)
+```
+
+The data is fairly balanced: while women make up slightly more of the respondents (there is a 50.7% split between the genders, skewing slightly towards women), when normalized, there are nearly identical satisfaction rates. 
+
+<br>
+
+### model 1: decision tree
+
+The first method we elected to use to evaluate the data set was a decision tree. Using CART, we sought to build a binary classifier for identifying the most important factors in determining customer experience as either **satisfied or not satisfied?**. 
+
+#### data prep
+
+To prep the data for our decision tree, we factored categorical data while preserving numerical variables. The target variable, `satisfaction`, was verified and re-classified with `1` for satisfied and `0` for not satisfied. The data was already organized into test and train sets which allowed us to bypass that step.
+
+```{r, warning=FALSE}
+#1 Load the data and ensure the column names don't have spaces, hint check.names.
+test <- read_csv("test.csv")
+train <- read_csv("train.csv")
+
+# remove the rows containing missing values
+test.cleaned <- test[complete.cases(test), ]
+train.cleaned <- train[complete.cases(train), ]
+
+# Fix names
+test.cleaned <- test.cleaned %>% dplyr::rename_all(make.names)
+train.cleaned <- train.cleaned %>% dplyr::rename_all(make.names)
+
+
+#2 Ensure all the variables are classified correctly and ensure the target variable for "satisfaction" is 0 for not satisfied and 1 for satisfied
+
+#remove the undesired columns such as age and gender
+test.cleaned <- test.cleaned[,-c(1,2,3,4,5,6)]
+train.cleaned <- train.cleaned[,-c(1,2,3,4,5,6)]
+
+# Turn the categorical variables into factors
+train.cleaned[,c(1,3:16)] <- lapply(train.cleaned[,c(1,3:16)], as.factor)
+test.cleaned[,c(1,3:16)] <- lapply(test.cleaned[,c(1,3:16)], as.factor)
+
+# recode 'satisfied' to binary
+test.cleaned$satisfaction <- recode(test.cleaned$satisfaction, 'neutral or dissatisfied' = 0, 'satisfied' = 1)
+
+train.cleaned$satisfaction <- recode(train.cleaned$satisfaction, 'neutral or dissatisfied' = 0, 'satisfied' = 1)
+
+train.cleaned$satisfaction <- as.factor(train.cleaned$satisfaction)
+test.cleaned$satisfaction <- as.factor(test.cleaned$satisfaction)
+
+
+common <- intersect(names(train.cleaned), names(test.cleaned)) 
+
+for (p in common) { 
+  if (class(train.cleaned[[p]]) == "factor") 
+  {
+    levels(test.cleaned[[p]]) <- levels(train.cleaned[[p]]) 
+  } 
+}
+
+```
+
+#### initial analysis
+
+After after the data had been cleaned and factored, analysis was performed to determine the base rates of both the test and train data sets.
+```{r}
+#6 Ok now determine the base-rate for the classifier
+
+kable(test.cleaned %>% 
+  group_by(satisfaction) %>% 
+  dplyr::summarise(base_rates = n() / nrow(test.cleaned) * 100), caption="base-rate for test set", digits=2, align='l')
+
+kable(train.cleaned %>%
+  group_by(satisfaction) %>% 
+  dplyr::summarise(base_rates = n() / nrow(train.cleaned) * 100), 
+  caption="base-rate for train set", digits=2, align='l')
+
+
+## base rate for positive classification
+base_rate_test <- 43.89
+base_rate_train <- 43.33
+
+
+```
+The base rates for the test and train sets were 43.89% and 43.33% respectively. These values are used as a standard of comparison for our model. 
+
+<br>
+
+#### model creation
+we created a binary decision tree with default parameters. 
+
+```{r}
+#7 Build your model using the default settings
+
+
+# set seed for reproducibility purposes
+set.seed(1980)
+
+# build default decision tree model for satisfaction classification
+satisfaction_tree_gini <- rpart(
+  satisfaction ~ ., # model formula
+  method = "class", # tree method
+  parms = list(split = "gini"), # split method
+  data = train.cleaned, # data used
+  control = rpart.control(cp = .01)
+  )
+```
+
+#### variable importance
+
+We assessed the variable importance to determine what factors were of the most importance in determining the satisfaction of customers.
+
+```{r}
+#8 View the results, what is the most important variable for the tree? 
+
+# check variable importance based on model
+satisfaction_tree_gini$variable.importance
+```
+
+We found that the option for online boarding was the most important followed by availability of inflight wifi.
+
+<br>
+
+#### rpart plot
+```{r}
+#9 Plot the tree using the rpart.plot package (CART only).
+
+# plot the tree
+rpart.plot(satisfaction_tree_gini)
+```
+
+From the decision tree we can see again that the option for online boarding is the most important factor. From there, inflight wifi and the class of flight were the next most important deciding factors. 
+
+Creating a cp plot allowed us to visualize the optimal tree size:
+
+```{r}
+#10 plot the cp chart and note the optimal size of the tree (CART only).
+
+# plot cp table
+plotcp(satisfaction_tree_gini)
+
+# convert cp table to df
+cp <- satisfaction_tree_gini$cptable %>% as.data.frame()
+```
+
+The optimal complexity value is the leftmost value that is below the threshold; in this case the optimal size is 7 decision splits.
+
+<br>
+
+#### test predictions
+
+Using the model, we can make predictions on the test set.  
+
+```{r}
+#11 Use the predict function and your models to predict the target variable using
+#test set. 
+
+# create new column equal to sum of real and standard error
+cp$opt <- cp$`rel error`+ cp$xstd
+
+# filter to minimum error and get nsplits
+cp %>% 
+  filter(opt == min(opt)) %>% 
+  summarise(nsplit)
+
+# save cp with lowest xerror
+service_cp <- cp %>% 
+  filter(xerror == min(xerror)) %>% 
+  summarise(CP) %>% 
+  as.numeric()
+
+# predict based on the model
+satisfaction_pred <-predict(satisfaction_tree_gini, test.cleaned[,-ncol(test.cleaned)], type = "class")
+```
+
+#### prediction analysis
+
+The model can be analyzed across several metrics: hit rate, detection rate, confusion matrix, and ROC/AUC.
+
+#### {.tabset}
+
+##### hit & detection rates
+
+The hit rate is the true error rate of the model (`(false positives+false negatives)/all data points`): 
+
+```{r}
+#12 Generate, "by-hand", the hit rate and detection rate and compare the 
+#detection rate to your original baseline rate. How did your models work?
+
+# generate confusion matrix of fitted and true classifications
+satisfaction_conf_matrix <- table(satisfaction_pred, test.cleaned$satisfaction)
+
+# calculate the error rate 
+satisfaction_error_rate <- sum(
+  satisfaction_conf_matrix[row(satisfaction_conf_matrix) != col(satisfaction_conf_matrix)]
+  ) /
+  sum(satisfaction_conf_matrix)
+paste0("true classification rate= ", 100 - satisfaction_error_rate * 100)
+
+paste0("true error rate= ", satisfaction_error_rate * 100)
+```
+
+The detection rate is the rate at which the model correctly identifies the positive class relative to the entire classification (`true positives/entire classification`):
+
+```{R}
+# calculate detection rate
+detection_rate <- satisfaction_conf_matrix[2,2] / sum(satisfaction_conf_matrix) * 100
+
+paste0("detection rate= ", detection_rate)
+```
+
+The error rate of our model is 11.35% and the detection rate is 38.88%. The model has a higher detection rate than error rate which is good to see.
+
+<br>
+
+##### confusion matrix
+
+The `confusionMatrix` function provides a range of evaluation metrics:
+
+```{r}
+#13 Use the the confusion matrix function in caret to 
+#check a variety of metrics and comment on the metric that might be best for 
+#each type of analysis.
+
+# create confusion matrix
+confusionMatrix(
+  as.factor(satisfaction_pred), 
+  as.factor(test.cleaned$satisfaction), 
+  positive = "1", 
+  dnn=c("Prediction", "Actual"), 
+  mode = "sens_spec"
+  )
+
+```
+
+The model accuracy is `88.56%` and the model sensitivity is `88.60%`. Compared to the base rate of `44.33%`, our model contributes a significant amount to the classification task. The similarity between the sensitivity and specificity metrics (`88.60%` and `88.53%`) suggests our model is equally good at identifying whether a customer's experience was positive or neutral/negative. 
+
+<br>
+
+##### ROC/AUC
+
+The ROC curve illustrates the diagnostic power of the model across all classification thresholds; the AUC scores provides an aggregate measure of performance of the model.  
+
+```{r}
+pred <- prediction(as.numeric(satisfaction_pred), as.numeric(test.cleaned$satisfaction))
+perf <- performance(pred,"tpr","fpr")
+plot(perf,colorize=TRUE)+abline(a=0,b=1)
+```
+
+Ideally, we balance the true positive rate with the false positive rate; at 0.16, the model sees the highest true positive rate while still constraining the false positive rate. 
+
+```{r}
+KNN_perf_AUC <- performance(pred,"auc")
+
+paste("AUC: ", KNN_perf_AUC@y.values)
+```
+
+In general, an AUC of 0.5 suggests no discrimination (i.e., ability to diagnose patients with and without the disease or condition based on the test), 0.7 to 0.8 is considered acceptable, 0.8 to 0.9 is considered excellent, and more than 0.9 is considered outstanding. Based on this rating system, our model has an outstanding fit.
+
+<br>
+
+### model 2: random forest
+
+#### data prep
+
+We started by cleaning the data. The general process was to delete certain variables which did not have an effect on the predictions, like the randomized survey ID. Then we used the complete cases function which ensured that not too many NA's got deleted to help with the data pipeline. Also, the survey data was categorized to help for better analysis. 
+
+```{r}
+# 1
+# You can use the function colnames() to apply the labels (hint: you might need to reshape the labels to make this work)
+train = read_csv("train.csv")
+test = read_csv("test.csv")
+
+train.cleaned <- train[complete.cases(train), ]
+train.cleaned <- train.cleaned %>% dplyr::rename_all(make.names)
+
+test.cleaned <- test[complete.cases(test), ]
+test.cleaned <- test.cleaned %>% dplyr::rename_all(make.names)
+
+train.cleaned$satisfaction <- recode(train.cleaned$satisfaction, 'neutral or dissatisfied' = 0, 'satisfied' = 1)
+test.cleaned$satisfaction <- recode(test.cleaned$satisfaction, 'neutral or dissatisfied' = 0, 'satisfied' = 1)
+
+train.cleaned <- train.cleaned[,-c(1:6)]
+test.cleaned <- test.cleaned[,-c(1:6)]
+
+train.cleaned$Class <- as.factor(train.cleaned$Class)
+test.cleaned$Class <- as.factor(test.cleaned$Class)
+
+train.cleaned[,3:16] <- lapply(train.cleaned[,3:16], factor)
+
+test.cleaned[,3:16] <- lapply(test.cleaned[,3:16], factor)
+
+train.cleaned$satisfaction <- as.factor(train.cleaned$satisfaction)
+test.cleaned$satisfaction <- as.factor(test.cleaned$satisfaction)
+
+
+train.ready.rfr <- train.cleaned
+test.ready.rfr <- test.cleaned
+
+common <- intersect(names(train.ready.rfr), names(test.ready.rfr)) 
+
+for (p in common) { 
+  if (class(train.ready.rfr[[p]]) == "factor") 
+  {
+    levels(test.ready.rfr[[p]]) <- levels(train.ready.rfr[[p]]) 
+  } 
+}
+```
+
+#### initial analysis
+
+Again, we calculated the base rate, which turned out to be pretty low (around ~40%). 
+
+```{r}
+#6 Ok now determine the base-rate for the classifier
+
+kable(test.cleaned %>% 
+  group_by(satisfaction) %>% 
+  dplyr::summarise(base_rates = n() / nrow(test.cleaned) * 100), caption="base-rate for test set", digits=2, align='l')
+
+kable(train.cleaned %>%
+  group_by(satisfaction) %>% 
+  dplyr::summarise(base_rates = n() / nrow(train.cleaned) * 100), 
+  caption="base-rate for train set", digits=2, align='l')
+
+
+## base rate for positive classification
+base_rate_test <- 43.89
+base_rate_train <- 43.33
+```
+
+#### model creation
+
+A random classifier was set up, which builds multiple decision trees and merges them to create an accurate and stable predictions. The general algorithm utilizes randomness to de-correlate the trees by splitting a random subset of features. This way, it considers only a small subset of features rather than all the features at the same time.
+
+```{r}
+set.seed(2025)	
+rf_classifier = randomForest(satisfaction ~ ., data=train.ready.rfr, #y = NULL,           #<- A response vector. This is unnecessary because we're specifying a response formula.
+                             ntree = 400,          #<- Number of trees to grow. This should not be set to too small a number, to ensure that every input row gets classified at least a few times.
+                              replace = TRUE,      #<- Should sampled data points be replaced.
+                              sampsize = 200,      #<- Size of sample to draw each time.
+                              nodesize = 5,        #<- Minimum numbers of data points in terminal nodes.
+                              importance = TRUE,   #<- Should importance predictors be assessed?
+                              proximity = FALSE,    #<- Should a proximity measure between rows be calculated?
+                              norm.votes = TRUE,   #<- If TRUE (default), the final result of votes are 
+                              keep.forest = TRUE,  #<- If set to FALSE, the forest will not be retained in the output object. If xtest is given, defaults to FALSE.
+                              keep.inbag = TRUE)
+```
+
+#### error analysis 
+
+We then plotted the average error along the number of trees built to help with visualization. 
+
+```{r}
+plot(rf_classifier, type="l", main="error rates vs. size of forest (in trees)")
+legend("right", colnames(rf_classifier$err.rate), col=1:3,cex=0.8,fill=1:3)
+```
+
+From the viz, we can see that the error sees diminishing returns around 100 trees.
+
+*quick note: OOB is the out-of-bag estimate (the mean prediction error on each training sample x_i using trees that did not have x_i in the training sample*
+
+<br>
+
+#### feature importance
+
+The next important step after running the random forest model was to determine the importance of each factor. Here, we used the varImpPlot function in R. As you can see online boarding, inflight wifi service, and airline classes represented the 3 most important factors for the satisfaction predictions. A simple explanation is that these factors form a part of prediction power of the Random Forest Model. If these factors were dropped from the model, it's prediction power would greatly reduce. As shown from the decision tree, these 3 factors remain the most important and contribute the best predictions of customer satisfaction.
+
+```{r}
+varImpPlot(rf_classifier, cex=.8, main="feature importance in rf classifier")
+```
+
+
+#### prediction analysis
+
+The model can be analyzed across several metrics: confusion matrix, and ROC/AUC, and Logloss. 
+
+#### {.tabset}
+
+##### confusion matrix
+
+Here, we ran a confusion matrix to help show how accurate the model is on the test data. 
+
+```{r}
+# first, create predictions on the test set
+prediction_for_table <- predict(rf_classifier, test.ready.rfr[,-ncol(test.ready.rfr)])
+confusionMatrix(prediction_for_table, as.factor(test.ready.rfr$satisfaction))
+```
+
+The confusion matrix resulted in an accuracy of `90.11%` and a Kappa of 0.7973, which is a lot better than the base rate already. The sensitivity value is very good at `94.69%` compared to the specificity value of `84.27%` — which means that the true positive rate is better than the true negative rate. This means that the model can predict when a customer is satisfied slightly better than when they aren't. 
+
+<br>
+
+##### ROC/AUC
+
+Let's take a look at the ROC curve. 
+
+```{r}
+prediction_for_roc_curve <- predict(rf_classifier, test.ready.rfr[,-ncol(test.ready.rfr)], type="prob")
+
+pred <- prediction(as.numeric(prediction_for_roc_curve[,"1"]), as.numeric(test.ready.rfr$satisfaction))
+perf <- performance(pred,"tpr","fpr")
+plot(perf,colorize=TRUE)+abline(a=0, b=1)
+
+```
+
+Based on the curve, it looks like the model is a very good fit, since the curve is well above the average line. 
+
+Now let's find the AUC value. In general, an AUC of 0.5 suggests no discrimination (i.e., ability to diagnose patients with and without the disease or condition based on the test), 0.7 to 0.8 is considered acceptable, 0.8 to 0.9 is considered excellent, and more than 0.9 is considered outstanding.
+
+In general, the AUC value tells how much the model is capable of distinguishing between classes. The higher the AUC, the better the model is at predicting satisfaction based on both specificity and sensitivity (for example, the higher the AUC, the better the model is at distinguishing between patients with the disease and no disease).
+
+```{r}
+KNN_perf_AUC <- performance(pred,"auc")
+
+paste("AUC: ", KNN_perf_AUC@y.values)
+```
+
+<br>
+
+##### LogLoss
+
+```{r}
+ll <- LogLoss(as.numeric(prediction_for_roc_curve[,"1"]), as.numeric(test.ready.rfr$satisfaction))
+ll
+```
+The LogLoss of the Model is 0.818-> the lower this value is the better for predictions. 
+
+<br>
+
+### conclusion
+
+The random tree model showed that we have a pretty outstanding fit, which definitely speaks towards the quality of the dataset. In comparison with the general decision tree, the random forest approach definitely is an improvement in classifying airline customer's satisfaction, as seen through the confusion matrix, ROC curve, and the AUC value. While the decision tree has its benefits — it more equally can identify satisfaction vs neutrality/dissatisfaction — the relative computational power of the random forest outweighs any significant contributions.
+
+According to the decision tree model and the random forest model, the 3 most important factors in airline satisfaction were the satisfaction levels of online boarding, inflight wifi services, and airline classes passengers sat in. Interestingly enough, the least important factors were arrival delays and departure delays in minutes. The exploratory analysis confirmed that these factors were indeed not as important to passengers as others, which can be explained by the importance of comfort and convenience in the flight itself shown by the importance analysis from the Random Forest Model. 
+
+This can be substantiated by the fact that our metrics for accuracy, sensitivity, and specificity were high for both the decision tree and the random forest model. If the focus is to improve customer airline satisfaction, people prefer the three factors (online boarding, inflight wifi services, and airline classes) over the other factors measured in the survey, such as delay/arrival time convenience, Gate Location, and food and drinks, and thus, further infrastructure should be invested into these services. 
+
+<br>
+
+#### future work
+
+Our analysis was constrained by a lack of environmental information and external conditions: was the departure delay caused by bad weather? did turbulence contribute significantly to a negative experience? was their seatmate rude? Allowing for explicit nuance to be explored could help us more finely explore the satisfaction-experience relationship; we would love this dataset to be expanded to include conditional variables. While we were comfortable with the balance, size, and quality of the dataset, future analysis could involve isolating to each airline: are there significant differences between airlines? does Delta see greater seat comfort and online boarding experiences than United? This dataset has a lot of potential to be leveraged as a business analytics tool.
