@@ -1,6 +1,6 @@
 # Airline Customer Satisfaction Prediction
 
-[R Documentation](sr9dc.github.io/DS_Airline_ML_Project_S2021/final_html.html)
+[R Documentation](https://sr9dc.github.io/DS_Airline_ML_Project_S2021/final_html.html)
 
 This project is a machine learning-based analysis of customer satisfaction for airlines. We aim to identify the most economically-friendly factors that airlines can invest in to improve customer satisfaction. Our analysis is guided by the assumption that customer retention is intrinsically tied to customer satisfaction, and we use a Kaggle dataset comprising 25 columns and 130,000 observations to build predictive models that can help identify the key drivers of customer satisfaction.
 
